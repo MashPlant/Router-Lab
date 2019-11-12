@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "rip.h"
 
@@ -29,28 +30,11 @@ struct iphdr {
   u32 daddr;
 };
 
-u16 overflowing_add(u16 a, u16 b) {
-  u32 x = (u32)a + b;
-  x = (x & 0xFFFF) + (x >> 16);
-  return (u16)x;
-}
-
-// will override the old check sum
-u16 calc_check_sum(u8 *packet) {
-  iphdr *hdr = (iphdr *)packet;
-  hdr->check = 0;
-  u16 sum = 0;
-  for (u16 *p = (u16 *)packet, *end = p + hdr->ihl * 2; p < end; ++p) {
-    sum = overflowing_add(sum, BE16(*p));
-  }
-  return ~sum;
-}
-
 struct RawRip {
   u8 command;  // 1(request) or 2(reponse)
   u8 version;  // 2
   u16 zero;
-  struct {
+  struct Entry {
     u16 family;  // 0(request) or 2(response)
     u16 tag;     // 0
     u32 addr;
@@ -109,7 +93,7 @@ bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
   if (BE16(hdr->tot_len) > len) return false;
   u32 off = hdr->ihl * 4 + 8;        // 8 is udp header size
   u32 count = (len - off - 4) / 20;  // 4 is rip header size, 20 is entry size
-  RawRip *raw = (RawRip *)(packet + off);
+  const RawRip *raw = (const RawRip *)(packet + off);
   bool request;
   if (raw->command == 1) {
     request = true;
@@ -120,22 +104,18 @@ bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
   }
   REQUIRE(raw->version == 2);
   REQUIRE(raw->zero == 0);
-  for (auto p = raw->entries, end = p + count; p < end; ++p) {
-    u16 family = BE16(p->family);
-    REQUIRE((request && family == 0) || (!request && family == 2));
-    REQUIRE(p->tag == 0);
-    u32 metric = BE32(p->metric);
-    REQUIRE(1 <= metric && metric <= 16);
-    u32 mask = BE32(p->mask);
-    REQUIRE(mask == 0 || (mask | ((1 << __builtin_ctz(mask)) - 1)) == ~0);
-  }
   output->numEntries = count;
   output->command = raw->command;
   for (u32 i = 0; i < count; ++i) {
-    output->entries[i].addr = raw->entries[i].addr;
-    output->entries[i].mask = raw->entries[i].mask;
-    output->entries[i].nexthop = raw->entries[i].nexthop;
-    output->entries[i].metric = raw->entries[i].metric;
+    const RawRip::Entry *src = &raw->entries[i];
+    u16 family = BE16(src->family);
+    REQUIRE((request && family == 0) || (!request && family == 2));
+    REQUIRE(src->tag == 0);
+    u32 metric = BE32(src->metric);
+    REQUIRE(1 <= metric && metric <= 16);
+    u32 mask = BE32(src->mask);
+    REQUIRE(mask == 0 || (mask | ((1 << __builtin_ctz(mask)) - 1)) == ~0);
+    memcpy(&output->entries[i].addr, &src->addr, 4 * sizeof(u32));
   }
   return true;
 }
@@ -158,12 +138,10 @@ uint32_t assemble(const RipPacket *rip, uint8_t *buffer) {
   raw->zero = 0;
   u16 family = rip->command == 1 ? 0 : BE16(2);
   for (u32 i = 0; i < count; ++i) {
-    raw->entries[i].family = family;
-    raw->entries[i].tag = 0;
-    raw->entries[i].addr = rip->entries[i].addr;
-    raw->entries[i].mask = rip->entries[i].mask;
-    raw->entries[i].nexthop = rip->entries[i].nexthop;
-    raw->entries[i].metric = rip->entries[i].metric;
+    RawRip::Entry *dst = &raw->entries[i];
+    dst->family = family;
+    dst->tag = 0;
+    memcpy(&dst->addr, &rip->entries[i], 4 * sizeof(u32));
   }
   return 4 + 20 * count;
 }

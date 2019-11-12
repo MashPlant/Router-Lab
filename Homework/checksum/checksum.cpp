@@ -27,20 +27,17 @@ struct iphdr {
   u32 daddr;
 };
 
-u16 overflowing_add(u16 a, u16 b) {
-  u32 x = (u32)a + b;
-  x = (x & 0xFFFF) + (x >> 16);
-  return (u16)x;
-}
-
-// will override the old check sum
 u16 calc_check_sum(u8 *packet) {
   iphdr *hdr = (iphdr *)packet;
+  u16 old = hdr->check;
   hdr->check = 0;
-  u16 sum = 0;
+  u32 sum = 0;
   for (u16 *p = (u16 *)packet, *end = p + hdr->ihl * 2; p < end; ++p) {
-    sum = overflowing_add(sum, BE16(*p));
+    sum += BE16(*p);
   }
+  hdr->check = old;
+  sum = (sum & 0xFFFF) + (sum >> 16);
+  sum = (sum & 0xFFFF) + (sum >> 16);
   return ~sum;
 }
 
@@ -50,7 +47,4 @@ u16 calc_check_sum(u8 *packet) {
  * @param len 即 packet 的长度，单位是字节，保证包含完整的 IP 头
  * @return 校验和无误则返回 true ，有误则返回 false
  */
-bool validateIPChecksum(uint8_t *packet, size_t _len) {
-  u16 old = BE16(((iphdr *)packet)->check);
-  return calc_check_sum(packet) == old;
-}
+bool validateIPChecksum(uint8_t *packet, size_t len) { return calc_check_sum(packet) == BE16(((iphdr *)packet)->check); }
