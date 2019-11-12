@@ -1,6 +1,13 @@
-#include "router.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+
+#include <algorithm>
+#include <vector>
+
+#include "router.h"
+
+std::vector<RoutingTableEntry> table;
 
 /*
   RoutingTable Entry 的定义如下：
@@ -22,11 +29,22 @@
  * @brief 插入/删除一条路由表表项
  * @param insert 如果要插入则为 true ，要删除则为 false
  * @param entry 要插入/删除的表项
- * 
+ *
  * 插入时如果已经存在一条 addr 和 len 都相同的表项，则替换掉原有的。
  */
 void update(bool insert, RoutingTableEntry entry) {
-  // TODO:
+  auto pos = std::find_if(table.begin(), table.end(), [&entry](const RoutingTableEntry &e) { return e.addr == entry.addr && e.len == entry.len; });
+  if (insert) {
+    if (pos != table.end()) {
+      pos->if_index = entry.if_index;
+      pos->nexthop = entry.nexthop;
+    } else {
+      table.push_back(entry);
+    }
+  } else if (pos != table.end()) {
+    std::swap(*pos, table.back());
+    table.pop_back();
+  }
 }
 
 /**
@@ -37,8 +55,18 @@ void update(bool insert, RoutingTableEntry entry) {
  * @return 查到则返回 true ，没查到则返回 false
  */
 bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index) {
-  // TODO:
-  *nexthop = 0;
-  *if_index = 0;
-  return false;
+  uint32_t max = 0;
+  uint32_t nexthop1, if_index1;
+  for (const auto &e : table) {
+    if (e.len > max && (addr & ((uint64_t(1) << e.len) - 1)) == e.addr) {
+      max = e.len;
+      nexthop1 = e.nexthop;
+      if_index1 = e.if_index;
+    }
+  }
+  if (max != 0) {
+    *nexthop = nexthop1;
+    *if_index = if_index1;
+  }
+  return max;
 }

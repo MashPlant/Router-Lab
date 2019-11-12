@@ -1,6 +1,64 @@
-#include "rip.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+
+#include "rip.h"
+
+using u8 = uint8_t;
+using u16 = uint16_t;
+using u32 = uint32_t;
+
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define BE16(x) __builtin_bswap16(x)
+#define BE32(x) __builtin_bswap32(x)
+#else
+#define BE16(x) x
+#define BE32(x) x
+#endif
+
+struct iphdr {
+  u8 ihl : 4, version : 4;
+  u8 tos;
+  u16 tot_len;
+  u16 id;
+  u16 frag_off;
+  u8 ttl;
+  u8 protocol;
+  u16 check;
+  u32 saddr;
+  u32 daddr;
+};
+
+u16 overflowing_add(u16 a, u16 b) {
+  u32 x = (u32)a + b;
+  x = (x & 0xFFFF) + (x >> 16);
+  return (u16)x;
+}
+
+// will override the old check sum
+u16 calc_check_sum(u8 *packet) {
+  iphdr *hdr = (iphdr *)packet;
+  hdr->check = 0;
+  u16 sum = 0;
+  for (u16 *p = (u16 *)packet, *end = p + hdr->ihl * 2; p < end; ++p) {
+    sum = overflowing_add(sum, BE16(*p));
+  }
+  return ~sum;
+}
+
+struct RawRip {
+  u8 command;  // 1(request) or 2(reponse)
+  u8 version;  // 2
+  u16 zero;
+  struct {
+    u16 family;  // 0(request) or 2(response)
+    u16 tag;     // 0
+    u32 addr;
+    u32 mask;  // todo
+    u32 nexthop;
+    u32 metric;  // [1, 16]
+  } entries[0];
+};
 
 /*
   在头文件 rip.h 中定义了如下的结构体：
@@ -35,7 +93,7 @@
  * @param len 即 packet 的长度
  * @param output 把解析结果写入 *output
  * @return 如果输入是一个合法的 RIP 包，把它的内容写入 RipPacket 并且返回 true；否则返回 false
- * 
+ *
  * IP 包的 Total Length 长度可能和 len 不同，当 Total Length 大于 len 时，把传入的 IP 包视为不合法。
  * 你不需要校验 IP 头和 UDP 的校验和是否合法。
  * 你需要检查 Command 是否为 1 或 2，Version 是否为 2， Zero 是否为 0，
@@ -44,8 +102,42 @@
  * Mask 的二进制是不是连续的 1 与连续的 0 组成等等。
  */
 bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
-  // TODO:
-  return false;
+#define REQUIRE(x) \
+  if (!(x)) return false;
+
+  iphdr *hdr = (iphdr *)packet;
+  if (BE16(hdr->tot_len) > len) return false;
+  u32 off = hdr->ihl * 4 + 8;        // 8 is udp header size
+  u32 count = (len - off - 4) / 20;  // 4 is rip header size, 20 is entry size
+  RawRip *raw = (RawRip *)(packet + off);
+  bool request;
+  if (raw->command == 1) {
+    request = true;
+  } else if (raw->command == 2) {
+    request = false;
+  } else {
+    return false;
+  }
+  REQUIRE(raw->version == 2);
+  REQUIRE(raw->zero == 0);
+  for (auto p = raw->entries, end = p + count; p < end; ++p) {
+    u16 family = BE16(p->family);
+    REQUIRE((request && family == 0) || (!request && family == 2));
+    REQUIRE(p->tag == 0);
+    u32 metric = BE32(p->metric);
+    REQUIRE(1 <= metric && metric <= 16);
+    u32 mask = BE32(p->mask);
+    REQUIRE(mask == 0 || (mask | ((1 << __builtin_ctz(mask)) - 1)) == ~0);
+  }
+  output->numEntries = count;
+  output->command = raw->command;
+  for (u32 i = 0; i < count; ++i) {
+    output->entries[i].addr = raw->entries[i].addr;
+    output->entries[i].mask = raw->entries[i].mask;
+    output->entries[i].nexthop = raw->entries[i].nexthop;
+    output->entries[i].metric = raw->entries[i].metric;
+  }
+  return true;
 }
 
 /**
@@ -53,12 +145,25 @@ bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
  * @param rip 一个 RipPacket 结构体
  * @param buffer 一个足够大的缓冲区，你要把 RIP 协议的数据写进去
  * @return 写入 buffer 的数据长度
- * 
+ *
  * 在构造二进制格式的时候，你需要把 RipPacket 中没有保存的一些固定值补充上，包括 Version、Zero、Address Family 和 Route Tag 这四个字段
  * 你写入 buffer 的数据长度和返回值都应该是四个字节的 RIP 头，加上每项 20 字节。
  * 需要注意一些没有保存在 RipPacket 结构体内的数据的填写。
  */
 uint32_t assemble(const RipPacket *rip, uint8_t *buffer) {
-  // TODO:
-  return 0;
+  RawRip *raw = (RawRip *)buffer;
+  u32 count = rip->numEntries;
+  raw->command = rip->command;
+  raw->version = 2;
+  raw->zero = 0;
+  u16 family = rip->command == 1 ? 0 : BE16(2);
+  for (u32 i = 0; i < count; ++i) {
+    raw->entries[i].family = family;
+    raw->entries[i].tag = 0;
+    raw->entries[i].addr = rip->entries[i].addr;
+    raw->entries[i].mask = rip->entries[i].mask;
+    raw->entries[i].nexthop = rip->entries[i].nexthop;
+    raw->entries[i].metric = rip->entries[i].metric;
+  }
+  return 4 + 20 * count;
 }
