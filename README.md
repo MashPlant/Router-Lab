@@ -1,6 +1,6 @@
 # Router-Lab
 
-最后更新：2019/11/5 17:00
+最后更新：2019/12/09 11:35 p.m.
 
 * [如何使用框架](#如何使用框架)
     * [如何使用 HAL](#如何使用-hal)
@@ -18,6 +18,8 @@
 * [FAQ（暗号：档）](#faq暗号档)
 * [附录：ip 命令的使用](#附录ip-命令的使用)
 * [附录：树莓派系统的配置和使用](#附录树莓派系统的配置和使用)
+* [附录： make 命令的使用和 Makefile 的编写](#附录-make-命令的使用和-makefile-的编写)
+* [名词解释](#名词解释)
 * [项目作者](#项目作者)
 
 
@@ -27,9 +29,14 @@
 2. 复用代码，在一个平台上编写的程序可以直接用于其他平台
 3. 方便测试，提供文件读写 PCAP 的后端，可以直接用数据进行黑箱测试
 
+实验的目标是完成一个具有以下功能的路由器：
+
+1. 转发：收到一个路过的 IP 包，通过查表得到下一棒（特别地，如果目的地址直接可达，下一棒就是目的地址），然后“接力”给下一棒。
+2. 路由：通过 RIP 协议，学习到网络的拓扑信息用于转发，使得网络可以连通。
+
 请仔细阅读下面的文本，在问问题时，请把以下每个括号中的 **暗号** 按顺序连在一起重复一遍然后再说你的问题。
 
-本文档默认你已经在软件工程、编译原理、程序设计训练等课程中已经学习到了足够的 Git 、Make 、Python3 和 Linux 的使用知识，如果用的是 Windows 系统，你可以在下发的树莓派上进行以下所有相关的操作。
+本文档默认你已经在软件工程、编译原理、程序设计训练等课程中已经学习到了足够的 Git 、Make 、SSH 、Python3 和 Linux 的使用知识。如果你用的是 Windows 系统，你可以 WSL/虚拟机/下发的树莓派上进行以下所有相关的操作。无论你电脑是用的是什么系统，最终都需要在树莓派的 Linux 上运行路由器。
 
 如果你运行的是 Debian 系列发行版（包括 Ubuntu、Raspbian），你可以一把梭地安装所有可能需要的依赖：
 
@@ -70,13 +77,15 @@ git submodule update --init --recursive
 3. stdio: 直接用标准输入输出，也是采用 pcap 格式，按照 VLAN 号来区分不同 interface。
 4. Xilinx: 在 Xilinx FPGA 上的一个实现，中间涉及很多与设计相关的代码，并不通用，仅作参考，对于想在 FPGA 上实现路由器的组有一定的参考作用。（暗号：认）
 
-后端的选择方法如下：
+后端的选择方法如下（在 Router-Lab 目录下执行）：
 
 ```bash
 mkdir build
 cd build
 cmake .. -DBACKEND=Linux
-make router_hal
+make router_hal # 编译 HAL 库，生成 ./HAL/librouter_hal.a
+make capture # 编译 Example 中的 capture，生成 ./Example/capture
+make # 编译 HAL 库和所有 Example
 ```
 
 其它后端类似设置即可。
@@ -113,7 +122,7 @@ HAL 即 Hardware Abstraction Layer 硬件抽象层，顾名思义，是隐藏了
 2. Broadcaster：一个粗糙的“路由器”，把在每个网口上收到的 IP 包又转发到所有网口上（暗号：真）
 3. Capture：仅把抓到的 IP 包原样输出
 
-如果你使用 CMake，可以用类似上面编译 HAL 库的方法编译这三个例子。如果不想使用 CMake，可以基于 `Homework/checksum/Makefile` 修改出适合例子的 Makefile 。它们可能都需要 root 权限运行，并在运行的适合你可以打开 Wireshark 等抓包工具研究它的具体行为。
+如果你使用 CMake，可以从上面编译 HAL 库的部分找到编译这三个例子的方法。如果不想使用 CMake，可以基于 `Homework/checksum/Makefile` 修改出适合例子的 Makefile 。它们可能都需要 root 权限运行，并在运行的时候你可以打开 Wireshark 等抓包工具研究它的具体行为。
 
 这些例子可以用于检验环境配置是否正确，如 Linux 下网卡名字的配置、是否编译成功等等。比如在上面的 Shell 程序中输入 `mac 0` `mac 1` `mac 2` 和 `mac 3`，它会输出对应网口的 MAC 地址，如果输出的数据和你用 `ip l`（macOS 可以用 `ifconfig`） 看到的内容一致，那基本说明你配置没有问题了。
 
@@ -151,7 +160,7 @@ main.cpp：用于评测的交互库，你不需要修改它
 Makefile：用于编译并链接 HAL 、交互库和你实现的代码
 ```
 
-使用方法：
+使用方法（在 Homework/checksum 目录下执行）：
 
 ```bash
 pip install pyshark # 仅第一次，一些平台下要用 pip3 install pyshark
@@ -210,7 +219,7 @@ default via 192.168.5.2
 192.168.5.0/24 dev pc2r3 scope link
 ```
 
-此时，接上你的树莓派，按照图示连接两侧的 R1 和 R3 后，从 PC1 到 PC2 是不通的。接着，在 R1 和 R3 上都开启 RIP 协议处理程序，它们分别会在自己的 RIP 包中宣告 `192.168.1.0/24` 和 `192.168.5.0/24` 的路由。一段时间后它们的转发表（即直连路由 + RIP 收到的路由）应该变成这样：
+上面的每个网口名称格式都是两个机器拼接而成，如 `pc1r1` 代表 pc1 上通往 r1 的网口。此时，接上你的树莓派，按照图示连接两侧的 R1 和 R3 后，从 PC1 到 PC2 是不通的。接着，在 R1 和 R3 上都开启 RIP 协议处理程序，它们分别会在自己的 RIP 包中宣告 `192.168.1.0/24` 和 `192.168.5.0/24` 的路由。一段时间后它们的转发表（即直连路由 + RIP 收到的路由）应该变成这样：
 
 ```
 R1:
@@ -231,20 +240,70 @@ R3:
 
 我们将会逐项检查下列内容：
 
-* PC1 是否与 PC2 能够正常通信（使用 `ping` 测试 ICMP、`curl` 测试 TCP 连接）
-* R2 的转发是否通过 HAL 完成，而非 Linux 自带的路由转发功能
-* R1、R3 上的 RIP 转发表是否正确（包括 RIP metric 等信息）
-* R2 向 R1、R3 发出的 RIP 协议报文是否正确（包括是否进行询问、响应请求，以及是否实现了水平分裂算法）
-* R2 上的 RIP 路由表、转发表是否正确（需要你定期或者每次收到报文时打印最新的 RIP 路由表、系统转发表）
+* PC1 是否与 PC2 能够正常通信：使用 `ping` 测试 ICMP、`curl` 测试 TCP 连接
+* R2 的转发是否通过 HAL 完成，而非 Linux 自带的路由转发功能：使用 `ip a` 命令确认连接 R1 和 R3 的网口上没有配置 IP 地址
+* R1、R3 上的 RIP 转发表是否正确：包括 RIP metric 等信息，从 R1 和 R3 上 运行的 BIRD 输出得到
+* R2 向 R1、R3 发出的 RIP 协议报文是否正确：包括是否进行询问、响应请求，以及是否实现了水平分裂（split horizon）算法，在 R1 和 R3 上用 Wireshark 抓包检查
+* R2 上的 RIP 路由表、转发表是否正确：需要你定期或者每次收到报文时打印最新的 RIP 路由表、系统转发表（见 FAQ 中对于路由表和转发表的讨论），格式自定
 
-此外，我们还将使用 `iperf3` 工具分别测试 PC1 和 PC2 双向进行 TCP 和 UDP 传输的速率。如果你的转发性能较高，可以获得额外的加分。
+必须实现的有：
+
+1. 转发功能，支持直连路由和间接路由，包括查表，TTL 减一，Checksum 更新并转到正确的 interface 出去。
+2. 周期性地向所有端口发送 RIP Response （建议在测试和验收时调为 5s），目标地址为 RIP 的组播地址。
+3. 对收到的 RIP Request 有相应的 RIP Response 进行回复，目标地址为 RIP Request 的源地址。
+4. 实现水平分割（split horizon）。
+5. 收到 RIP Response 时，对路由表进行维护。
+6. 定期或者在更新的时候向 stdout/stderr 打印最新的 RIP 路由表。
+
+可选实现的有（不加分，但对调试有帮助）：
+
+1. 对 ICMP Echo Request 进行 ICMP Echo Reply 的回复。
+2. 在查不到路由表的时候，回复 ICMP Host Unreachable。
+3. 在 TTL 减为 0 时，回复 ICMP Time Exceeded。
+4. 支持 RIP Entry 中 nexthop 不为 0 的情况。
+5. 在路由表出现更新的时候发送 RIP Response（完整或者增量），目标地址为 RIP 的组播地址。
+6. 在 split horizon 基础上实现 reverse poisoning 。
+7. 路由的失效（Invalid）和删除（Flush）计时器。
+8. 在发送的 RIP Response 出现不止 25 条 Entry 时拆分。
+9. 程序启动时向所有 interface 发送 RIP Request，目标地址为 RIP 的组播地址。
+
+不需要实现的有：
+
+1. ARP 的处理。
+2. IGMP 的处理。
+3. interface 状态的跟踪（UP/DOWN 切换）。
+
+此外，我们还将使用 `iperf3` 工具分别测试 PC1 和 PC2 双向进行 TCP 和 UDP 传输的速率。如果你的转发性能较高，可以获得额外的加分。同时，我们可能会进行代码和知识点的抽查。
 
 我们提供了 `host0.pcap` 和 `host1.pcap` ，分别是在 R1 和 R3 抓包的结果，模拟了实验的过程：
 
 1. 开启 R1 R3 上的 BIRD 和 R2 上运行的路由器实现
 2. 使用 ping 进行了若干次连通性测试
 
-注意，这个例子中，路由器只实现了 split horizon，没有实现 reverse poisoning，你的实现不需要和它完全一样。
+注意，这个例子中，路由器只实现了 split horizon，没有实现 reverse poisoning，你的实现不需要和它完全一样。Split horizon 的实现方法见 [RFC2452 3.4.3 Split horizon 第一段](https://tools.ietf.org/html/rfc2453#page-15)。
+
+举个例子，从 PC1 到 PC2 进行 ping 连通性测试的网络活动（忽略 RIP）：
+
+1. PC1 要 ping 192.168.5.1 ，查询路由表得知下一跳是 192.168.1.1 。
+2. 假如 PC1 还不知道 192.168.1.1 的 MAC 地址，则发送源地址为 192.168.1.2 的 ARP 请求（通过 pc1r1）询问 192.168.1.1 的 MAC 地址。
+3. R1 接收到 ARP 请求，回复 MAC 地址（r1pc1）给 PC1 （通过 r1pc1）。
+4. PC1 把 ICMP 包发给 R1 ，目标 MAC 地址为上面 ARP 请求里回复的 MAC 地址，即 R1 的 MAC 地址（r1pc1）。
+5. R1 接收到 IP 包，查询路由表得知下一跳是 192.168.3.2 ，假如它已经知道 192.168.3.2 的 MAC 地址。
+6. R1 把 IP 包外层的源 MAC 地址改为自己的 MAC 地址（r1r2），目的 MAC 地址改为 192.168.3.2 的 MAC 地址（R2 的 r2r1），发给 R2（通过 r1r2）。
+7. R2 接收到 IP 包，查询路由表得知下一跳是 192.168.4.2 ，假如它不知道 192.168.4.2 的 MAC 地址，所以丢掉这个 IP 包。
+8. R2 发送源地址为 192.168.4.1 的 ARP 请求（通过 r2r3）询问 192.168.4.2 的 MAC 地址。
+9. R3 接收到 ARP 请求，回复 MAC 地址（r3r2）给 R2（通过 r3r2）。
+10. PC1 继续 ping 192.168.5.1，查询路由表得知下一跳是 192.168.1.1 。
+11. PC1 把 ICMP 包发给 R1 ，目标 MAC 地址为 192.168.1.1 对应的 MAC 地址，源 MAC 地址为 192.168.1.2 对应的 MAC 地址。
+12. R1 查表后把 ICMP 包发给 R2，目标 MAC 地址为 192.168.3.2 对应的 MAC 地址，源 MAC 地址为 192.168.3.1 对应的 MAC 地址。
+13. R2 查表后把 ICMP 包发给 R3，目标 MAC 地址为 192.168.4.2 对应的 MAC 地址，源 MAC 地址为 192.168.4.1 对应的 MAC 地址。
+14. R3 查表后把 ICMP 包发给 PC2，目标 MAC 地址为 192.168.5.1 对应的 MAC 地址，源 MAC 地址为 192.168.5.2 对应的 MAC 地址。
+15. PC2 收到后响应，查表得知下一跳是 192.168.5.2 。
+16. PC2 把 ICMP 包发给 R3，目标 MAC 地址为 192.168.5.2 对应的 MAC 地址，源 MAC 地址为 192.168.5.2 对应的 MAC 地址。
+17. R3 把 ICMP 包发给 R2，目标 MAC 地址为 192.168.4.1 对应的 MAC 地址，源 MAC 地址为 192.168.4.2 对应的 MAC 地址。
+18. R2 把 ICMP 包发给 R1，目标 MAC 地址为 192.168.3.1 对应的 MAC 地址，源 MAC 地址为 192.168.3.2 对应的 MAC 地址。
+19. R1 把 ICMP 包发给 PC1，目标 MAC 地址为 192.168.1.2 对应的 MAC 地址，源 MAC 地址为 192.168.1.1 对应的 MAC 地址。
+20. PC1 上 ping 显示成功。
 
 ### 实验第三部分
 
@@ -288,9 +347,10 @@ int main() {
     while (1) {
         // 获取当前时间，处理定时任务
         uint64_t time = HAL_GetTicks();
-        if (time > last_time + 30 * 10000) {
+        if (time > last_time + 30 * 1000) {
             // 每 30s 做什么
-            // 例如：超时？发 RIP Request？
+            // 例如：超时？发 RIP Request/Response？
+            last_time = time;
         }
 
         // 轮询
@@ -330,7 +390,7 @@ int main() {
 }
 ```
 
-你可以直接基于 `Homework/boilerplate` 下的代码，把上面的代码实现完全。
+你可以直接基于 `Homework/boilerplate` 下的代码，把上面的代码实现完全。代码中在发送 RIP 包的时候，会涉及到 IP 头的构造，由于不需要用各种高级特性，可以这么设定：V=4，IHL=5，TOS(DSCP/ECN)=0，ID=0，FLAGS/OFF=0，TTL=1，其余按照要求实现即可。
 
 ### 如何启动并配置一个比较标准的 RIP 实现
 
@@ -340,7 +400,7 @@ int main() {
 # log "bird.log" all; # 可以将 log 输出到文件中
 # debug protocols all; # 如果要更详细的信息，可以打开这个
 
-router id 网口IP地址;
+router id 网口IP地址; # 随便写一个，保证唯一性即可
 
 protocol device {
 }
@@ -357,7 +417,7 @@ protocol kernel {
 
 protocol static {
     ipv4 { };
-    route 1.2.3.4/32 via "网口名称"; # 添加一个静态路由让路由表非空
+    route 1.2.3.4/32 via "网口名称"; # 可以手动添加一个静态路由方便调试
 }
 
 protocol rip {
@@ -373,13 +433,40 @@ protocol rip {
 }
 ```
 
-如果你用的是 v1.6 版本，上面有一些字段需要修改。
+如果你用的是 v1.6 版本，有一些字段需要修改：
+
+```
+router id 网口IP地址; # 随便写一个，保证唯一性即可
+
+protocol device {
+}
+
+protocol kernel {
+    learn;
+    persist off;
+    export all;
+}
+
+protocol static {
+    route 1.2.3.4/32 via "网口名称";
+}
+
+protocol rip {
+    import all;
+    export all;
+    debug all;
+    interface "网口名称" {
+        version 2;
+        update time 5;
+    };
+}
+```
 
 这里的网口名字对应你连接到路由器的网口，也要配置一个固定的 IP 地址，需要和路由器对应网口的 IP 在同一个网段内。配置固定 IP 地址的命令格式为 `ip a add IP地址/前缀长度 dev 网口名称`，你可以用 `ip a` 命令看到所有网口的信息。
 
 启动服务（如 `systemctl start bird`）后，你就可以开始抓包，同时查看 bird 打出的信息（`journalctl -f -u bird`），这对调试你的路由器实现很有帮助。
 
-你也可以直接运行 BIRD（`bird -c /etc/bird.conf`），可在命令选项中加上 `-d` 方便直接退出进程。若想同时开多个 BIRD，则需要给每个进程指定单独的 socket。
+你也可以直接运行 BIRD（`bird -c /etc/bird.conf`），可在命令选项中加上 `-d` 把程序放到前台，方便直接退出进程。若想同时开多个 BIRD，则需要给每个进程指定单独的 PID 文件和 socket，如 `bird -d -c bird1.conf -P bird1.pid -s bird1.socket` 。
 
 ### 如何在一台计算机上进行真实测试
 
@@ -406,6 +493,14 @@ ip netns exec net1 ip addr add 10.1.1.2/24 dev veth-net1
 
 你还可以运行 `ip netns exec net0 [command]` 来执行任何你想在特定 namespace 下执行的命令，也可以运行 `ip netns exec net0 bash` 打开一个网络环境为 net0 的 bash。
 
+如果你在一个 netns 中用 Linux 自带的功能做转发，需要运行如下命令（root 身份，重启后失效）：
+
+```
+echo 1 > /proc/sys/net/ipv4/conf/all/forwarding
+```
+
+上面的 all 可以替换为 interface 的名字。在用这种方法的时候需要小心 Linux 自带的转发和你编写的转发的冲突，在 R2 上不要用 `ip a` 命令配置 IP 地址。
+
 
 ## FAQ（暗号：档）
 
@@ -415,7 +510,7 @@ A：总是有同学不认真阅读文档，所以，如果你阅读到了这里�
 
 Q：我用的是纯命令行环境，没有 Wireshark 图形界面可以用，咋办？
 
-A：你可以用 tcpdump 代替 Wireshark，它的特点是一次性输出所有内容；或者用 tshark，是 Wireshark 官方的 CLI 版本；也可以用 termshark ，它是 Wireshark 的 TUI 版，操作方式和 Wireshark 是一致的
+A：你可以用 tcpdump 代替 Wireshark，它的特点是一次性输出所有内容；或者用 tshark，是 Wireshark 官方的 CLI 版本；也可以用 termshark ，它是 Wireshark 的 TUI 版，操作方式和 Wireshark 是一致的。比较常用的 tshark 用法是 `sudo tshark -i [interface_name] -V -l [filter]` ，其中 `interface_name` 是网卡名字，如 `eth0` ，`-V` 表示打印出解析树， `-l` 表示关闭输出缓冲， `[filter]` 表示过滤，常见的有 `arp` `ip` `icmp` 等等。
 
 Q: 运行 `grade.py` 的时候，提示找不到 tshark ，怎么办？
 
@@ -447,8 +542,27 @@ A: 这是因为 Linux 对于网卡有 TX Offload 机制，对于传输层协议�
 
 Q: 这个实验怎么要用到怎么多工具啊？我好像都没学过，这不是为难我吗？
 
-A: 实验所使用的大部分工具相信同学们在若干先修课程中已经有所接触，如 Git（软件工程）、Make（面向对象程序设计基础）、Python（程序设计训练）、SSH（高性能计算导论）等，只有 Wireshark 和 iproute2 才是完成此次实验需要额外学习的。Wireshark 能帮助同学们完成调试，iproute2 是管理 Linux 操作系统网络的必备工具，我们在下面的附录中提供了一份简短的使用说明。学习并掌握工具的使用方法会更有利于完成实验，这里不做强制要求。
+A: 实验所使用的大部分工具相信同学们在若干先前已经修过的课程中已经有所接触，如 Git（软件工程、编译原理）、Make（面向对象程序设计基础）、Python（程序设计训练）、SSH（高性能计算导论）等，只有 Wireshark 和 iproute2 才是完成此次实验需要额外学习的。Wireshark 能帮助同学们完成调试，iproute2 是管理 Linux 操作系统网络的必备工具，我们在下面的附录中提供了一份简短的使用说明。学习并掌握工具的使用方法会更有利于完成实验，这里不做强制要求。另外，物理系和工物系的小学期课程实验物理的大数据方法上课内容囊括了 Git、Make、Python、SSH 和 Linux。
 
+Q: 我听说过转发表这个概念，它和路由表是什么关系？
+
+A: 实际上这两个是不一样的，路由协议操作路由表，转发操作查询转发表，转发表从路由表中来。但软件实现的路由器其实可以不对二者进行区分，所以在文档里统称为路由表。在 router.h 里的 RoutingTableEntry 只有转发需要的内容，但为了支持 RIP 协议，你还需要额外添加一些字段，如 metric 等等。
+
+Q: 树莓派和计算机组成原理用的板子有什么区别？
+
+A: 树莓派就是一个小型的计算机，只不过指令集是 ARM ，其余部分用起来和笔记本电脑没有本质区别；计算机组成原理的板子核心是 FPGA ，你需要编写 Verilog 代码对它进行编程。
+
+Q: 我在树莓派写的可以工作的代码，放到我的 x86 电脑上跑怎么就不工作了呢？或者反过来，我在 x86 电脑上写的可以工作的代码，放到树莓派上怎么就不工作了呢？
+
+A: 一个可能的原因是代码出现了 Undefined Behavior ，编译器在不同架构下编译出不同的代码，导致行为不一致。可以用 UBSan 来发现这种问题。
+
+Q: 我用 ssh 连不上树莓派，有什么办法可以进行诊断吗？
+
+A: 可以拿 HDMI 线把树莓派接到显示器上，然后插上 USB 的键盘和鼠标，登录进去用 `ip` 命令看它的网络情况。网络连接方面，可以用网线连到自己的电脑或者宿舍路由器上，也可以连接到 Wi-Fi 。如果没有显示器，也可以用 USB 转串口，把串口接到树莓派对应的引脚上。
+
+Q: 我在 macOS 上安装了 Wireshark，但是报错找不到 tshark ？
+
+A: tshark 可能被安装到了 /Applications/Wireshark.app/Contents/MacOS/tshark 路径下，如果存在这个文件，把目录放到 PATH 环境变量里就可以了。
 
 ## 附录：`ip` 命令的使用 
 
@@ -682,10 +796,84 @@ Timer
 Timer
 ```
 
+## 附录： make 命令的使用和 Makefile 的编写
+
+`make` 命令的功能就是按照 Makefile 中编写的规则来生成一些文件，这些文件之间会有依赖的关系，`make` 会安装依赖关系增量地进行生成，达到编译一个完整的程序的目的。下面以 `Homework/boilerplate/Makefile` 举例说明：
+
+```makefile
+CXX ?= g++
+LAB_ROOT ?= ../..
+BACKEND ?= LINUX
+CXXFLAGS ?= --std=c++11 -I $(LAB_ROOT)/HAL/include -DROUTER_BACKEND_$(BACKEND)
+LDFLAGS ?= -lpcap
+```
+
+这一部分定义了若干个变量，左边是 key ，右边是 value ，`$(LAB_ROOT)` 表示变量 `LAB_ROOT` 的内容。条件赋值 `?=` 表示的是只有在第一次赋值时才生效，可以通过 `make CXX=clang++` 来让 CXX 变量的内容变成 clang++。
+
+```makefile
+.PHONY: all clean
+all: boilerplate
+
+clean:
+	rm -f *.o boilerplate std
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $^ -o $@
+
+hal.o: $(LAB_ROOT)/HAL/src/linux/router_hal.cpp
+	$(CXX) $(CXXFLAGS) -c $^ -o $@
+
+boilerplate: main.o hal.o protocol.o checksum.o lookup.o forwarding.o
+	$(CXX) $^ -o $@ $(LDFLAGS) 
+```
+
+这里出现了一个格式： `xxx: aaa bbb ccc` ，它代表如果要生成 `xxx` ，首先要生成 `aaa` `bbb` 和 `ccc` ，代表了依赖关系，只有 `aaa` `bbb` `ccc` 都生成了，才会生成 `xxx`，另一方面，如果 `xxx` 的更新时间比 `aaa` `bbb` `ccc` 都新，那么就不会重新生成 `xxx` 。紧接着这一行的就是生成的具体过程。
+
+在这里， `.PHONY: all clean` 是特殊的，代表右侧的目标并不是真正的文件，如果没有这一行，并且当前目录有一个名为 `all` 的文件，那么它就不会执行 `all` 内部的命令；加上这一行以后，即使有名为 `all` 的文件，也会尝试去构建。
+
+Make 通过 `%.o` 的格式来支持 wildcard，如 `%.o: %.cpp` 就可以针对所有的 .cpp 文件构建对应的 .o 文件。在命令中，用 `$^` 代表所有依赖， `$@` 代表目标文件， `$<` 代表第一个依赖，如在 `xxx: aaa bbb ccc` 中，`$^` 代表 `aaa bbb ccc` ，`$@` 代表 `xxx` ，`$<` 代表 `aaa`。
+
+以上就涵盖了本实验中 Makefile 用到的所有语法。使用的时候只需要 `make` 就可以了。
+
+## 名词解释
+
+- router：路由器，它主要的工作是在网络层上进行 IP 协议的转发。
+- lab：实验，可以理解为需要实践的作业。
+- git：一个版本控制系统
+- make：一个编译构建系统
+- python3：一个编程语言
+- windows：微软公司的操作系统
+- linux：由 Linus Torvalds 最初编写并主导开发的操作系统内核
+- debian：一个操作系统及自由软件的发行版
+- ubuntu：基于 debian 的以桌面应用为主的发行版
+- raspbian：基于 debian 的针对树莓派的发行版
+- apt：debian 发行版的包管理器
+- pip：python 语言的包管理器
+- pcap：1. 是一种格式，存储了网络数据 2. 是一个库/工具，提供了从真实网卡上抓取网络数据包的途径
+- wireshark：一个用户友好的抓包工具，可以对抓到的数据进行深入的解析
+- tshark：Wireshark 的 CLI 版本，可以直接在命令行环境下运行
+- iproute2: Linux 系统下一个网络管理工具
+- g++：GCC 的一部分，是一个 C++ 语言的编译器
+- pyshark：在 Python 中使用 tshark 的一个库
+- HAL：硬件抽象层，表示对一类硬件或者平台进行抽象得到的统一的接口
+- submodule：git 在一个仓库中包括另一个仓库的一种方法
+- macOS：苹果公司的操作系统，前身是 Mac OS X
+- xilinx：赛灵思公司，计算机组成原理课程使用的 FPGA 来自这个公司
+- cmake：一个编译构建系统，可以生成 make、vs 等可以构建的项目文件
+- interface：Linux 下的一个网口，可以是真实的，也可以是虚拟的
+- tick：时钟滴答的一下响声
+- link：一条链路，比如一条网线连接两台设备
+- dev：device 的缩写，表示设备
+- systemctl：systemd 的一个管理程序，可以控制服务的启动和停止
+- journalctl：systemd 的查看服务日志的工具
+- tcpdump：一个命令行的抓报工具
+- raw socket：Linux 提供的一套接口，可以抓取满足特定条件的数据包
+- sudo：以 root 权限运行某个程序
+
 ## 项目作者
 
 总设计师： @z4yx
 
 后续维护： @Harry-Chen @jiegec
 
-提过建议： @Konaoo
+提交贡献： @Konaoo @nzh63 @linusboyle

@@ -7,7 +7,14 @@
 
 #include "router.h"
 
-std::vector<RoutingTableEntry> table;
+typedef struct {
+  uint32_t addr;
+  uint32_t mask;
+  uint32_t if_index;
+  uint32_t nexthop;
+} Entry;
+
+std::vector<Entry> table;
 
 /*
   RoutingTable Entry 的定义如下：
@@ -33,13 +40,14 @@ std::vector<RoutingTableEntry> table;
  * 插入时如果已经存在一条 addr 和 len 都相同的表项，则替换掉原有的。
  */
 void update(bool insert, RoutingTableEntry entry) {
-  auto pos = std::find_if(table.begin(), table.end(), [&entry](const RoutingTableEntry &e) { return e.addr == entry.addr && e.len == entry.len; });
+  uint32_t addr = entry.addr, mask = (1ULL << entry.len) - 1;
+  auto pos = std::find_if(table.begin(), table.end(), [addr, mask](const Entry &e) { return e.addr == addr && e.mask == mask; });
   if (insert) {
     if (pos != table.end()) {
       pos->if_index = entry.if_index;
       pos->nexthop = entry.nexthop;
     } else {
-      table.push_back(entry);
+      table.push_back(Entry{addr, mask, entry.if_index, entry.nexthop});
     }
   } else if (pos != table.end()) {
     std::swap(*pos, table.back());
@@ -58,8 +66,8 @@ bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index) {
   uint32_t max = 0;
   uint32_t nexthop1, if_index1;
   for (const auto &e : table) {
-    if (e.len > max && (addr & ((uint64_t(1) << e.len) - 1)) == e.addr) {
-      max = e.len;
+    if (e.mask > max && (addr & e.mask) == e.addr) {
+      max = e.mask;
       nexthop1 = e.nexthop;
       if_index1 = e.if_index;
     }
