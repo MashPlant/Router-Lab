@@ -167,12 +167,12 @@ bool check_rip(const IpHdr *ip, u32 len) {
 
 __attribute__((aligned(4))) u8 packet[2048];
 
-// 0: 10.0.0.1
-// 1: 10.0.1.1
+// 0: 192.168.3.2
+// 1: 192.168.5.2
 // 2: 10.0.2.1
 // 3: 10.0.3.1
 // 你可以按需进行修改，注意端序
-u32 addrs[N_IFACE_ON_BOARD] = {0x0100000a, 0x0101000a, 0x0102000a, 0x0103000a};
+u32 addrs[N_IFACE_ON_BOARD] = {0x0203a8c0, 0x0205a8c0, 0x0102000a, 0x0103000a};
 macaddr_t multicast_mac = {0x01, 0x00, 0x5e, 0x00, 0x00, 0x09};
 
 // `iface` == -1u means send to all interfaces
@@ -224,6 +224,18 @@ void send_response(u32 iface) {
   }
 }
 
+#define IP_FMT(x) x >> 24, x >> 16 & 0xFF, x >> 8 & 0xFF, x & 0xFF
+
+void print_table() {
+  printf("table = [\n");
+  for (auto &e : table) {
+    u32 addr = BE32(e.addr), nexthop = BE32(e.nexthop);
+    printf("  { addr: %d.%d.%d.%d, mask: %x, nexthop: %d.%d.%d.%d, metric: %d, if_index: %d},\n",
+      IP_FMT(addr), BE32(e.mask), IP_FMT(nexthop), BE32(e.metric), e.if_index);
+  }
+  printf("]\n");
+}
+
 i32 main() {
   i32 res = HAL_Init(1, addrs);
   if (res < 0) {
@@ -233,14 +245,13 @@ i32 main() {
   // Add direct routes
   for (u32 i = 0; i < N_IFACE_ON_BOARD; i++) {
     table.push_back(RouteEntry{
-        .addr = addrs[i],
+        .addr = addrs[i] & ((1 << 24) - 1),
         .mask = (1 << 24) - 1,
         .nexthop = 0,
         .metric = BE32(1),
         .if_index = i,
     });
   }
-
   { // initially send RIP Request to all interfaces
     IpHdr *ip = (IpHdr *)packet;
     UdpHdr *udp = (UdpHdr *)(packet + 20);
@@ -283,6 +294,7 @@ i32 main() {
     u64 time = HAL_GetTicks();
     if (time > last_time + 5 * 1000) {
       printf("5s Timer\n");
+      // print_table();
       last_time = time;
       send_response(-1u);
     }
@@ -320,24 +332,31 @@ i32 main() {
         if (rip->command == 1) { // request
           send_response(if_index);
         } else { // response
+          bool changed = false;
           for (u32 i = 0; i < rip_count; ++i) {
             u32 addr = rip->entries[i].addr, mask = rip->entries[i].mask;
             u32 metric = std::min(BE32(16), rip->entries[i].metric + BE32(1));
             auto it = std::find_if(table.begin(), table.end(), [addr, mask](const RouteEntry &e) { return e.addr == addr && e.mask == mask; });
             if (it != table.end()) {
               if (it->nexthop == src_addr) {
+                changed |= it->metric != metric;
                 if ((it->metric = metric) == BE32(16)) {
                   std::swap(*it, table.back());
                   table.pop_back();
                 }
               } else if (it->metric > metric) {
+                changed = true;
                 it->nexthop = rip->entries[i].nexthop;
                 it->metric = metric;
                 it->if_index = if_index;
               }
             } else {
-              table.push_back(RouteEntry{addr, mask, src_addr, metric, if_index});
+              changed = true;
+              table.push_back(RouteEntry{addr & mask, mask, src_addr, metric, if_index});
             }
+          }
+          if (changed) {
+            print_table();
           }
           // todo: triggered updates? ref. RFC2453 3.10.1
         }
@@ -346,7 +365,9 @@ i32 main() {
       // forward
       // beware of endianness
       u32 nexthop, dest_if;
-      if (query(src_addr, &nexthop, &dest_if)) {
+      // printf("received packed: src = %x, dst = %x\n", src_addr, dst_addr);
+      if (query(dst_addr, &nexthop, &dest_if)) {
+        // printf("found nexthop = %x, dest_if = %d", nexthop, dest_if);
         // found
         macaddr_t dest_mac;
         // direct routing
