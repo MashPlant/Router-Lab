@@ -1,10 +1,8 @@
-// #include "../..//HAL/include/router_hal.h"
 #include "router_hal.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <vector>
 
 using u8 = uint8_t;
@@ -43,15 +41,6 @@ struct UdpHdr {
   u16 chksum;
 } __attribute__((aligned(4)));
 
-struct IcmpPkt {
-  u8 type;
-  u8 code;
-  u16 chksum;
-  u16 unused;
-  u8 remain[0];
-  // IP header and first 8 bytes of original datagram's data
-};
-
 u16 calc_check_sum(IpHdr *ip) {
   u16 old = ip->check;
   ip->check = 0;
@@ -65,31 +54,20 @@ u16 calc_check_sum(IpHdr *ip) {
   return (u16)~sum;
 }
 
-// 约定 addr 和 nexthop 以 **大端序** 存储。
-// 这意味着 1.2.3.4 对应 0x04030201 而不是 0x01020304。
-// 保证 addr 仅最低 len 位可能出现非零。
-// 当 nexthop 为零时这是一条直连路由。
 struct RouteEntry {
-  u32 addr;     // 大端序，IPv4 地址
-  u32 mask;     // (1ULL << len) - 1, bigger is better match
-  u32 nexthop;  // 大端序，下一跳的 IPv4 地址
-  u32 metric;   // 大端序(两个大端序的metric可以直接比较大小)
-  u32 if_index; // 小端序，出端口编号
+  u32 addr;     // big endian, e.g., 1.2.3.4 is 0x04030201 rather than 0x01020304
+  u32 mask;     // big endian
+  u32 nexthop;  // big endian, nexthop == 0 means direct routing
+  u32 metric;   // big endian, two big endian metrics can be compared directly
+  u32 if_index; // machine endian
 };
 
 std::vector<RouteEntry> table;
 
-/**
- * @brief 进行一次路由表的查询，按照最长前缀匹配原则
- * @param addr 需要查询的目标地址，大端序
- * @param nexthop 如果查询到目标，把表项的 nexthop 写入
- * @param if_index 如果查询到目标，把表项的 if_index 写入
- * @return 查到则返回 true ，没查到则返回 false
- */
 bool query(u32 addr, u32 *nexthop, u32 *if_index) {
   u32 max = 0;
   u32 nexthop1, if_index1;
-  for (const auto &e : table) {
+  for (auto &e : table) {
     if (e.mask > max && (addr & e.mask) == e.addr) {
       max = e.mask;
       nexthop1 = e.nexthop;
@@ -114,25 +92,10 @@ struct RawRip {
     u32 mask;
     u32 nexthop;
     u32 metric; // [1, 16]
-  } entries[0];
+  } entries[];
 } __attribute__((aligned(4)));
 
-/**
- * @brief 从接受到的 IP 包解析出 Rip 协议的数据
- * @param packet 接受到的 IP 包
- * @param len 即 packet 的长度
- * @param output 把解析结果写入 *output
- * @return 如果输入是一个合法的 RIP 包，把它的内容写入 RipPacket 并且返回
- * true；否则返回 false
- *
- * IP 包的 Total Length 长度可能和 len 不同，当 Total Length 大于 len
- * 时，把传入的 IP 包视为不合法。 你不需要校验 IP 头和 UDP 的校验和是否合法。
- * 你需要检查 Command 是否为 1 或 2，Version 是否为 2， Zero 是否为 0，
- * Family 和 Command 是否有正确的对应关系，Tag 是否为 0，
- * Metric 转换成小端序后是否在 [1,16] 的区间内，
- * Mask 的二进制是不是连续的 1 与连续的 0 组成等等。
- */
-bool check_rip(const IpHdr *ip, u32 len) {
+bool check_rip(IpHdr *ip, u32 len) {
 #define REQUIRE(x) \
   if (!(x))        \
     return false;
@@ -141,7 +104,7 @@ bool check_rip(const IpHdr *ip, u32 len) {
     return false;
   u32 off = ip->ihl * 4 + 8;        // 8 is udp header size
   u32 count = (len - off - 4) / 20; // 4 is rip header size, 20 is entry size
-  const RawRip *raw = (const RawRip *)((u8 *)ip + off);
+  RawRip *raw = (RawRip *)((u8 *)ip + off);
   bool request;
   if (raw->command == 1) {
     request = true;
@@ -153,13 +116,13 @@ bool check_rip(const IpHdr *ip, u32 len) {
   REQUIRE(raw->version == 2);
   REQUIRE(raw->zero == 0);
   for (u32 i = 0; i < count; ++i) {
-    const RawRip::Entry *src = &raw->entries[i];
-    u16 family = BE16(src->family);
+    RawRip::Entry &e = raw->entries[i];
+    u16 family = BE16(e.family);
     REQUIRE((request && family == 0) || (!request && family == 2));
-    REQUIRE(src->tag == 0);
-    u32 metric = BE32(src->metric);
+    REQUIRE(e.tag == 0);
+    u32 metric = BE32(e.metric);
     REQUIRE(1 <= metric && metric <= 16);
-    u32 mask = BE32(src->mask);
+    u32 mask = BE32(e.mask);
     REQUIRE(mask == 0 || (mask | ((1 << __builtin_ctz(mask)) - 1)) == ~0u);
   }
   return true;
@@ -168,22 +131,22 @@ bool check_rip(const IpHdr *ip, u32 len) {
 __attribute__((aligned(4))) u8 packet[2048];
 
 // 0: 192.168.3.2
-// 1: 192.168.5.2
+// 1: 192.168.4.1
 // 2: 10.0.2.1
 // 3: 10.0.3.1
-// 你可以按需进行修改，注意端序
-u32 addrs[N_IFACE_ON_BOARD] = {0x0203a8c0, 0x0205a8c0, 0x0102000a, 0x0103000a};
+u32 addrs[N_IFACE_ON_BOARD] = {0x0203a8c0, 0x0104a8c0, 0x0102000a, 0x0103000a};
 macaddr_t multicast_mac = {0x01, 0x00, 0x5e, 0x00, 0x00, 0x09};
 
 // `iface` == -1u means send to all interfaces
-void send_response(u32 iface) {
+void send_response(u32 iface, u32 dst_addr) {
   IpHdr *ip = (IpHdr *)packet;
   UdpHdr *udp = (UdpHdr *)(packet + 20);
   RawRip *rip = (RawRip *)(packet + 28);
+  macaddr_t dst_mac;
   *ip = IpHdr{
       .ihl = 5,
       .version = 4,
-      .tos = 0xc0,  // 110 0000 0, 110 = Internetwork Control
+      .tos = 0,
       .tot_len = 0, // set later
       .id = 0,
       .frag_off = 0,
@@ -191,7 +154,7 @@ void send_response(u32 iface) {
       .protocol = 17, // udp
       .check = 0,     // set later
       .saddr = 0,     // set later
-      .daddr = RIP_MULITCAST_ADDR,
+      .daddr = dst_addr,
   };
   *udp = UdpHdr{.src = BE16(520), .dst = BE16(520), .len = 0 /* set later */, .chksum = 0};
   rip->command = 2; // response
@@ -201,7 +164,7 @@ void send_response(u32 iface) {
     if (iface == -1u || iface == i) {
       u32 cnt = 0;
       for (auto &e1 : table) {
-        if (e1.nexthop != addrs[i]) { // split horizon
+        if (e1.nexthop == 0 || e1.if_index != i) { // split horizon
           RawRip::Entry &e2 = rip->entries[cnt];
           e2.family = BE16(2);
           e2.tag = 0;
@@ -219,7 +182,9 @@ void send_response(u32 iface) {
       ip->saddr = addrs[i];
       ip->check = BE16(calc_check_sum(ip));
       udp->len = BE16((u16)(tot_len - 20));
-      HAL_SendIPPacket(i, packet, tot_len, multicast_mac);
+      if (HAL_ArpGetMacAddress(i, dst_addr, dst_mac) == 0) {
+        HAL_SendIPPacket(i, packet, tot_len, dst_mac); 
+      }
     }
   }
 }
@@ -294,9 +259,8 @@ i32 main() {
     u64 time = HAL_GetTicks();
     if (time > last_time + 5 * 1000) {
       printf("5s Timer\n");
-      // print_table();
       last_time = time;
-      send_response(-1u);
+      send_response(-1u, RIP_MULITCAST_ADDR);
     }
     macaddr_t src_mac;
     macaddr_t dst_mac;
@@ -330,13 +294,15 @@ i32 main() {
         u32 rip_count = (res - off - 4) / 20; // 4 is rip header size, 20 is entry size
         RawRip *rip = (RawRip *)(packet + off);
         if (rip->command == 1) { // request
-          send_response(if_index);
+          send_response(if_index, src_addr);
         } else { // response
           bool changed = false;
           for (u32 i = 0; i < rip_count; ++i) {
-            u32 addr = rip->entries[i].addr, mask = rip->entries[i].mask;
+            u32 mask = rip->entries[i].mask;
+            u32 addr = rip->entries[i].addr & mask;
             u32 metric = std::min(BE32(16), rip->entries[i].metric + BE32(1));
-            auto it = std::find_if(table.begin(), table.end(), [addr, mask](const RouteEntry &e) { return e.addr == addr && e.mask == mask; });
+            auto it = std::find_if(table.begin(), table.end(),
+              [addr, mask](RouteEntry &e) { return e.addr == addr && e.mask == mask; });
             if (it != table.end()) {
               if (it->nexthop == src_addr) {
                 changed |= it->metric != metric;
@@ -346,36 +312,30 @@ i32 main() {
                 }
               } else if (it->metric > metric) {
                 changed = true;
-                it->nexthop = rip->entries[i].nexthop;
+                it->nexthop = src_addr;
                 it->metric = metric;
                 it->if_index = if_index;
               }
             } else {
               changed = true;
-              table.push_back(RouteEntry{addr & mask, mask, src_addr, metric, if_index});
+              table.push_back(RouteEntry{addr, mask, src_addr, metric, if_index});
             }
           }
           if (changed) {
+            printf("changed, src_addr = %d.%d.%d.%d\n", IP_FMT(BE32(src_addr)));
             print_table();
           }
-          // todo: triggered updates? ref. RFC2453 3.10.1
         }
       }
-    } else {
-      // forward
-      // beware of endianness
+    } else { // forward
       u32 nexthop, dest_if;
-      // printf("received packed: src = %x, dst = %x\n", src_addr, dst_addr);
       if (query(dst_addr, &nexthop, &dest_if)) {
-        // printf("found nexthop = %x, dest_if = %d", nexthop, dest_if);
-        // found
         macaddr_t dest_mac;
         // direct routing
         if (nexthop == 0) {
           nexthop = dst_addr;
         }
         if (HAL_ArpGetMacAddress(dest_if, nexthop, dest_mac) == 0) {
-          // found
           if (ip->ttl == 0) {
             // todo: send icmp tle
           } else {
@@ -384,14 +344,12 @@ i32 main() {
             HAL_SendIPPacket(dest_if, packet, res, dest_mac);
           }
         } else {
-          // not found
-          // you can drop it
+          // not found, you can drop it
           printf("ARP not found for %x\n", nexthop);
         }
       } else {
-        // not found
-        // optionally you can send ICMP Host Unreachable
-        printf("IP not found for %x\n", src_addr);
+        // not found, optionally you can send ICMP Host Unreachable
+        printf("IP not found for %x\n", dst_addr);
       }
     }
   }
