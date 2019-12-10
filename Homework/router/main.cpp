@@ -194,6 +194,9 @@ void send_response(u32 iface) {
       .daddr = RIP_MULITCAST_ADDR,
   };
   *udp = UdpHdr{.src = BE16(520), .dst = BE16(520), .len = 0 /* set later */, .chksum = 0};
+  rip->command = 2; // response
+  rip->version = 2;
+  rip->zero = 0;
   for (u32 i = 0; i < N_IFACE_ON_BOARD; ++i) {
     if (iface == -1u || iface == i) {
       u32 cnt = 0;
@@ -228,11 +231,6 @@ i32 main() {
   }
 
   // Add direct routes
-  // For example:
-  // 10.0.0.0/24 if 0
-  // 10.0.1.0/24 if 1
-  // 10.0.2.0/24 if 2
-  // 10.0.3.0/24 if 3
   for (u32 i = 0; i < N_IFACE_ON_BOARD; i++) {
     table.push_back(RouteEntry{
         .addr = addrs[i],
@@ -271,7 +269,7 @@ i32 main() {
         .addr = 0, // addr, mask nexthtop not used in a request
         .mask = 0,
         .nexthop = 0,
-        .metric = 16, // infinity
+        .metric = BE32(16), // infinity
     };
     for (u32 i = 0; i < N_IFACE_ON_BOARD; ++i) {
       ip->saddr = addrs[i];

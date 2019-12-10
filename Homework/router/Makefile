@@ -1,6 +1,6 @@
 CXX ?= g++
 LAB_ROOT ?= ../..
-BACKEND ?= STDIO
+BACKEND ?= LINUX
 CXXFLAGS ?= --std=c++11 -I $(LAB_ROOT)/HAL/include -DROUTER_BACKEND_$(BACKEND)
 LDFLAGS ?= -lpcap
 
@@ -8,9 +8,9 @@ LDFLAGS ?= -lpcap
 all: router.out
 
 clean:
-	rm -f *.o router std
+	rm -f *.o *.out
 
-hal.o: $(LAB_ROOT)/HAL/src/stdio/router_hal.cpp
+hal.o: $(LAB_ROOT)/HAL/src/linux/router_hal.cpp
 	$(CXX) $(CXXFLAGS) -c $^ -o $@
 
 router.out: main.cpp hal.o
