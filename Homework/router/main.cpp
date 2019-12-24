@@ -139,6 +139,16 @@ macaddr_t multicast_mac = {0x01, 0x00, 0x5e, 0x00, 0x00, 0x09};
 
 // `iface` == -1u means send to all interfaces
 void send_response(u32 iface, u32 dst_addr) {
+#define SEND_ALL()                                         \
+  do {                                                     \
+    u32 tot_len = 20 + 8 + 4 + cnt * 20;                   \
+    ip->tot_len = BE16((u16)tot_len);                      \
+    ip->check = BE16(calc_check_sum(ip));                  \
+    udp->len = BE16((u16)(tot_len - 20));                  \
+    if (HAL_ArpGetMacAddress(i, dst_addr, dst_mac) == 0) { \
+      HAL_SendIPPacket(i, packet, tot_len, dst_mac);       \
+    }                                                      \
+  } while (false)
   IpHdr *ip = (IpHdr *)packet;
   UdpHdr *udp = (UdpHdr *)(packet + 20);
   RawRip *rip = (RawRip *)(packet + 28);
@@ -162,6 +172,7 @@ void send_response(u32 iface, u32 dst_addr) {
   rip->zero = 0;
   for (u32 i = 0; i < N_IFACE_ON_BOARD; ++i) {
     if (iface == -1u || iface == i) {
+      ip->saddr = addrs[i];
       u32 cnt = 0;
       for (auto &e1 : table) {
         if (e1.nexthop == 0 || e1.if_index != i) { // split horizon
@@ -173,17 +184,13 @@ void send_response(u32 iface, u32 dst_addr) {
           e2.nexthop = 0;
           e2.metric = e1.metric;
           if (++cnt == 25) {
-            break;
+            SEND_ALL();
+            cnt = 0;
           }
         }
       }
-      u32 tot_len = 20 + 8 + 4 + cnt * 20;
-      ip->tot_len = BE16((u16)tot_len);
-      ip->saddr = addrs[i];
-      ip->check = BE16(calc_check_sum(ip));
-      udp->len = BE16((u16)(tot_len - 20));
-      if (HAL_ArpGetMacAddress(i, dst_addr, dst_mac) == 0) {
-        HAL_SendIPPacket(i, packet, tot_len, dst_mac); 
+      if (cnt != 0) {
+        SEND_ALL();
       }
     }
   }
@@ -192,11 +199,13 @@ void send_response(u32 iface, u32 dst_addr) {
 #define IP_FMT(x) x >> 24, x >> 16 & 0xFF, x >> 8 & 0xFF, x & 0xFF
 
 void print_table() {
-  printf("table = [\n");
-  for (auto &e : table) {
+  u32 size = (u32)table.size();
+  printf("table: count = %d, last 25 elements = [\n", size);
+  for (u32 i = size > 25 ? size - 25 : 0; i < size; ++i) {
+    RouteEntry &e = table[i];
     u32 addr = BE32(e.addr), nexthop = BE32(e.nexthop);
     printf("  { addr: %d.%d.%d.%d, mask: %x, nexthop: %d.%d.%d.%d, metric: %d, if_index: %d},\n",
-      IP_FMT(addr), BE32(e.mask), IP_FMT(nexthop), BE32(e.metric), e.if_index);
+           IP_FMT(addr), BE32(e.mask), IP_FMT(nexthop), BE32(e.metric), e.if_index);
   }
   printf("]\n");
 }
@@ -302,7 +311,7 @@ i32 main() {
             u32 addr = rip->entries[i].addr & mask;
             u32 metric = std::min(BE32(16), rip->entries[i].metric + BE32(1));
             auto it = std::find_if(table.begin(), table.end(),
-              [addr, mask](RouteEntry &e) { return e.addr == addr && e.mask == mask; });
+                                   [addr, mask](RouteEntry &e) { return e.addr == addr && e.mask == mask; });
             if (it != table.end()) {
               if (it->nexthop == src_addr) {
                 changed |= it->metric != metric;
@@ -339,8 +348,15 @@ i32 main() {
           if (ip->ttl == 0) {
             // todo: send icmp tle
           } else {
+            // naive checksum
+            // --ip->ttl;
+            // ip->check = BE16(calc_check_sum(ip));
+            // incremental checksum
+            u16 old = BE16(ip->check);
             --ip->ttl;
-            ip->check = BE16(calc_check_sum(ip));
+            u32 sum = old + 0x100;
+            sum = (sum & 0xFFFF) + (sum >> 16);
+            ip->check = BE16((u16)(sum == 0xFFFF ? 0 : sum));
             HAL_SendIPPacket(dest_if, packet, res, dest_mac);
           }
         } else {

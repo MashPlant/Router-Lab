@@ -52,11 +52,14 @@ u16 calc_check_sum(u8 *packet) {
  */
 bool forward(uint8_t *packet, size_t len) {
   // 在这里你不需要考虑 TTL 为 0 的情况，在最终你的路由器实现中才做要求
-  if (calc_check_sum(packet) != BE16(((iphdr *)packet)->check)) {
+  u16 old = BE16(((iphdr *)packet)->check);
+  if (calc_check_sum(packet) != old) {
     return false;
   }
   iphdr *hdr = (iphdr *)packet;
   --hdr->ttl;
-  hdr->check = BE16(calc_check_sum(packet));
+  u32 sum = old + 0x100;
+  sum = (sum & 0xFFFF) + (sum >> 16);
+  hdr->check = BE16((u16) (sum == 0xFFFF ? 0 : sum));
   return true;
 }
