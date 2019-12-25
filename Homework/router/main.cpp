@@ -268,6 +268,7 @@ i32 main() {
     u64 time = HAL_GetTicks();
     if (time > last_time + 5 * 1000) {
       printf("5s Timer\n");
+      print_table();
       last_time = time;
       send_response(-1u, RIP_MULITCAST_ADDR);
     }
@@ -305,7 +306,6 @@ i32 main() {
         if (rip->command == 1) { // request
           send_response(if_index, src_addr);
         } else { // response
-          bool changed = false;
           for (u32 i = 0; i < rip_count; ++i) {
             u32 mask = rip->entries[i].mask;
             u32 addr = rip->entries[i].addr & mask;
@@ -314,25 +314,18 @@ i32 main() {
                                    [addr, mask](RouteEntry &e) { return e.addr == addr && e.mask == mask; });
             if (it != table.end()) {
               if (it->nexthop == src_addr) {
-                changed |= it->metric != metric;
                 if ((it->metric = metric) == BE32(16)) {
                   std::swap(*it, table.back());
                   table.pop_back();
                 }
               } else if (it->metric > metric) {
-                changed = true;
                 it->nexthop = src_addr;
                 it->metric = metric;
                 it->if_index = if_index;
               }
             } else {
-              changed = true;
               table.push_back(RouteEntry{addr, mask, src_addr, metric, if_index});
             }
-          }
-          if (changed) {
-            printf("changed, src_addr = %d.%d.%d.%d\n", IP_FMT(BE32(src_addr)));
-            print_table();
           }
         }
       }
